@@ -1,46 +1,53 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  Gamepad2,
-  Sparkles,
+  Bot,
+  Boxes,
   Loader2,
-  Download,
-  RefreshCw,
-  Wand2,
-  Code2,
   Play,
+  RefreshCw,
+  Send,
   Square,
+  Terminal,
+  Wrench,
+  AlertTriangle,
+  CheckCircle2,
+  Download,
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { GameFrame } from "@/components/studio/GameFrame";
-import { extractHtml } from "@/lib/game-prompt";
+import { EngineSettings } from "@/components/studio/EngineSettings";
+import { FileExplorer } from "@/components/studio/FileExplorer";
+import { PreviewFrame, type PreviewHandle } from "@/components/studio/PreviewFrame";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { runAgent, type AgentEvent } from "@/lib/cryptoxi/agent";
+import { build } from "@/lib/cryptoxi/bundler";
+import { project, useProject } from "@/lib/cryptoxi/project";
+import { isConfigured, loadProvider, type ProviderConfig, DEFAULT_PROVIDER } from "@/lib/cryptoxi/provider";
 
 const IDEAS = [
-  "Neon snake with power-ups and a combo multiplier",
-  "Space shooter with waves, boss and screen shake",
-  "Endless runner on a synthwave grid",
-  "Brick breaker with particle explosions",
-  "Flappy-style bird through a neon canyon",
-  "Tower defense on a hex grid",
+  "Create a 3D zombie survival game with inventory, weapons, crafting, quests, enemies, day/night cycle and a large map.",
+  "Build a first-person parkour runner with wall-running, grapple hook and a timer leaderboard.",
+  "Make a top-down twin-stick shooter with waves, upgrades and screen shake.",
+  "Add a stamina system tied to sprinting, with a HUD bar.",
 ];
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Arcadia — Free AI Game Generator" },
+      { title: "CryptoXI — Autonomous AI Game Developer" },
       {
         name: "description",
         content:
-          "Describe any game and Arcadia builds a polished, playable HTML5 game in seconds — free, fast, and instantly downloadable.",
+          "CryptoXI is a project-aware AI game developer: it plans, architects, writes, builds, tests, debugs and previews real multi-file 3D web games on your own inference backend.",
       },
-      { property: "og:title", content: "Arcadia — Free AI Game Generator" },
+      { property: "og:title", content: "CryptoXI — Autonomous AI Game Developer" },
       {
         property: "og:description",
         content:
-          "Type an idea, get a complete browser game with graphics, sound and controls. Play it instantly or download the single HTML file.",
+          "Describe a game or a change. CryptoXI inspects the project, writes the systems, builds, runs, fixes errors and shows you the running game.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
@@ -49,233 +56,254 @@ export const Route = createFileRoute("/")({
   component: StudioPage,
 });
 
+type LogItem = AgentEvent & { id: number };
+
 function StudioPage() {
-  const [idea, setIdea] = useState("");
-  const [status, setStatus] = useState<"idle" | "building">("idle");
-  const [chars, setChars] = useState(0);
-  const [html, setHtml] = useState("");
-  const [showCode, setShowCode] = useState(false);
-  const [version, setVersion] = useState(0);
-  const [lastIdea, setLastIdea] = useState("");
+  const [config, setConfig] = useState<ProviderConfig>(DEFAULT_PROVIDER);
+  const [request, setRequest] = useState("");
+  const [running, setRunning] = useState(false);
+  const [log, setLog] = useState<LogItem[]>([]);
+  const [phase, setPhase] = useState("Idle");
+  const previewRef = useRef<PreviewHandle>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const logRef = useRef<HTMLDivElement>(null);
+  const state = useProject();
 
-  const build = useCallback(
-    async (prompt: string, remix: boolean) => {
-      const trimmed = prompt.trim();
-      if (trimmed.length < 3) {
-        toast.error("Describe the game you want first.");
-        return;
-      }
+  useEffect(() => setConfig(loadProvider()), []);
+  useEffect(() => {
+    logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
+  }, [log]);
 
-      abortRef.current?.abort();
-      const controller = new AbortController();
-      abortRef.current = controller;
-      setStatus("building");
-      setChars(0);
-      setShowCode(false);
+  const push = useCallback((event: AgentEvent) => {
+    setLog((l) => [...l, { ...event, id: l.length + Date.now() }].slice(-200));
+    if (event.kind === "phase") setPhase(`${event.role} · ${event.phase}`);
+  }, []);
 
-      try {
-        const response = await fetch("/api/generate-game", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            idea: trimmed,
-            ...(remix && html ? { previousHtml: html } : {}),
-          }),
-          signal: controller.signal,
-        });
+  const start = useCallback(async () => {
+    const prompt = request.trim();
+    if (prompt.length < 3) return toast.error("Tell CryptoXI what to build or fix.");
+    if (!isConfigured(config)) return toast.error("Configure an inference backend under Engine first.");
 
-        if (!response.ok || !response.body) {
-          const data = (await response.json().catch(() => null)) as { error?: string } | null;
-          throw new Error(data?.error ?? "Build failed. Please try again.");
-        }
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setRunning(true);
+    setLog([]);
+    if (!project.get().brief) project.setMeta({ brief: prompt });
 
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let raw = "";
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          raw += decoder.decode(value, { stream: true });
-          setChars(raw.length);
-        }
+    try {
+      await runAgent({
+        request: prompt,
+        config,
+        signal: controller.signal,
+        onEvent: (event) => {
+          push(event);
+          if (event.kind === "done") toast.success("CryptoXI finished — the game is running.");
+          if (event.kind === "error") toast.error(event.text);
+        },
+        ctx: {
+          runPreview: async (html) => (await previewRef.current?.run(html)) ?? [],
+        },
+      });
+    } finally {
+      setRunning(false);
+      setPhase("Idle");
+      abortRef.current = null;
+    }
+  }, [request, config, push]);
 
-        const doc = extractHtml(raw);
-        if (!doc.toLowerCase().includes("</html>")) {
-          throw new Error("The game came back incomplete — try building again.");
-        }
-        setHtml(doc);
-        setLastIdea(trimmed);
-        setVersion((v) => v + 1);
-        toast.success(remix ? "Game updated." : "Game ready — press play in the preview.");
-      } catch (error) {
-        if ((error as Error).name === "AbortError") return;
-        toast.error((error as Error).message);
-      } finally {
-        setStatus("idle");
-        abortRef.current = null;
-      }
-    },
-    [html],
-  );
+  const runNow = async () => {
+    const files = Object.fromEntries(project.list().map((p) => [p, project.read(p) ?? ""]));
+    const result = build(files);
+    project.setBuildErrors(result.errors);
+    if (!result.ok) return toast.error(result.errors[0]);
+    const errors = await previewRef.current?.run(result.html);
+    project.setRuntimeErrors(errors ?? []);
+  };
 
   const download = () => {
-    const blob = new Blob([html], { type: "text/html" });
+    const files = Object.fromEntries(project.list().map((p) => [p, project.read(p) ?? ""]));
+    const result = build(files);
+    const blob = new Blob([result.html], { type: "text/html" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${(lastIdea || "game").toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40)}.html`;
+    a.download = `${(state.name || "cryptoxi-game").toLowerCase().replace(/[^a-z0-9]+/g, "-")}.html`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
-  const building = status === "building";
+  const hasFiles = Object.keys(state.files).length > 0;
+  const problems = [...state.buildErrors, ...state.runtimeErrors];
 
   return (
     <main className="relative min-h-screen overflow-hidden bg-background text-foreground">
-      <div className="pointer-events-none absolute inset-0 bg-arcade-grid opacity-[0.35]" />
-      <div className="pointer-events-none absolute -top-40 left-1/2 h-[38rem] w-[38rem] -translate-x-1/2 rounded-full bg-primary/20 blur-[130px]" />
-      <div className="pointer-events-none absolute -bottom-52 right-0 h-[32rem] w-[32rem] rounded-full bg-accent/20 blur-[140px]" />
+      <div className="pointer-events-none absolute inset-0 bg-arcade-grid opacity-[0.3]" />
+      <div className="pointer-events-none absolute -top-40 left-1/3 h-[34rem] w-[34rem] rounded-full bg-primary/20 blur-[140px]" />
 
-      <div className="relative mx-auto w-full max-w-6xl px-5 py-10 sm:px-8 sm:py-14">
-        <header className="flex flex-col items-center text-center">
-          <span className="inline-flex items-center gap-2 rounded-full border border-primary/40 bg-primary/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-primary">
-            <Sparkles className="size-3.5" /> free · unlimited · instant
-          </span>
-          <h1 className="mt-5 font-display text-4xl font-bold leading-[1.05] tracking-tight sm:text-6xl">
-            Describe a game.
-            <span className="block bg-gradient-to-r from-primary via-accent to-primary bg-clip-text text-transparent">
-              Play it seconds later.
+      <div className="relative mx-auto w-full max-w-7xl px-4 py-6 sm:px-6">
+        <header className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h1 className="font-display text-2xl font-bold tracking-tight sm:text-3xl">
+              Crypto<span className="text-primary">XI</span>
+            </h1>
+            <p className="text-xs text-muted-foreground sm:text-sm">
+              An autonomous AI game developer — plans, writes, builds, tests and fixes your project.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="rounded-full border border-border bg-secondary/60 px-3 py-1 text-xs text-muted-foreground">
+              {running ? phase : isConfigured(config) ? config.model : "no backend"}
             </span>
-          </h1>
-          <p className="mt-4 max-w-xl text-sm text-muted-foreground sm:text-base">
-            Arcadia writes a complete HTML5 game — graphics, sound, controls, scoring and
-            difficulty curve — in one self-contained file you can play here or download.
-          </p>
+            <EngineSettings config={config} onChange={setConfig} />
+          </div>
         </header>
 
-        <section className="mt-10 rounded-2xl border border-border bg-card/70 p-4 shadow-glow backdrop-blur-xl sm:p-6">
-          <label htmlFor="idea" className="font-display text-sm font-semibold tracking-wide">
-            What should we build?
-          </label>
-          <Textarea
-            id="idea"
-            value={idea}
-            onChange={(e) => setIdea(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) build(idea, false);
-            }}
-            placeholder="A fast neon platformer where you dash through collapsing floors, with combo scoring and a boss at 60 seconds…"
-            rows={3}
-            className="mt-3 resize-none border-input bg-background/60 text-base"
-          />
-
-          <div className="mt-3 flex flex-wrap gap-2">
-            {IDEAS.map((preset) => (
-              <button
-                key={preset}
-                type="button"
-                onClick={() => setIdea(preset)}
-                className="rounded-full border border-border bg-secondary/60 px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
-              >
-                {preset}
-              </button>
-            ))}
-          </div>
-
-          <div className="mt-5 flex flex-wrap items-center gap-3">
-            <Button
-              size="lg"
-              onClick={() => build(idea, false)}
-              disabled={building}
-              className="font-display tracking-wide"
-            >
-              {building ? (
-                <>
-                  <Loader2 className="animate-spin" /> Building…
-                </>
-              ) : (
-                <>
-                  <Gamepad2 /> Generate game
-                </>
-              )}
-            </Button>
-
-            {html && !building && (
-              <Button size="lg" variant="secondary" onClick={() => build(idea || lastIdea, true)}>
-                <Wand2 /> Improve current game
-              </Button>
-            )}
-
-            {building && (
-              <>
-                <Button size="lg" variant="outline" onClick={() => abortRef.current?.abort()}>
-                  <Square /> Stop
-                </Button>
-                <span className="text-xs text-muted-foreground">
-                  {chars.toLocaleString()} characters written
-                </span>
-              </>
-            )}
-          </div>
-        </section>
-
-        <section className="mt-8">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <h2 className="font-display text-lg font-semibold">
-              {html ? `Preview · v${version}` : "Preview"}
-            </h2>
-            {html && (
-              <div className="flex flex-wrap gap-2">
-                <Button variant="outline" size="sm" onClick={() => setVersion((v) => v + 1)}>
-                  <RefreshCw /> Restart
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => setShowCode((s) => !s)}>
-                  <Code2 /> {showCode ? "Hide code" : "View code"}
-                </Button>
-                <Button size="sm" onClick={download}>
-                  <Download /> Download HTML
-                </Button>
+        <div className="mt-5 grid gap-4 lg:grid-cols-[minmax(0,26rem)_1fr]">
+          <section className="flex flex-col gap-3">
+            <div className="rounded-2xl border border-border bg-card/70 p-3 backdrop-blur-xl">
+              <Textarea
+                value={request}
+                onChange={(e) => setRequest(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) start();
+                }}
+                rows={4}
+                placeholder="Create a 3D zombie survival game with inventory, crafting and a day/night cycle…"
+                className="resize-none border-input bg-background/60 text-sm"
+              />
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {IDEAS.map((i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => setRequest(i)}
+                    className="max-w-full truncate rounded-full border border-border bg-secondary/50 px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
+                  >
+                    {i.slice(0, 46)}…
+                  </button>
+                ))}
               </div>
-            )}
-          </div>
-
-          <div className="mt-3 overflow-hidden rounded-2xl border border-border bg-card/60 shadow-glow backdrop-blur-xl">
-            <div className="aspect-video w-full">
-              {html ? (
-                <GameFrame key={version} html={html} title={lastIdea || "Generated game"} />
-              ) : (
-                <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
-                  {building ? (
-                    <>
-                      <Loader2 className="size-8 animate-spin text-primary" />
-                      <p className="font-display text-sm">Writing your game engine…</p>
-                      <p className="text-xs text-muted-foreground">
-                        {chars.toLocaleString()} characters and counting
-                      </p>
-                    </>
-                  ) : (
-                    <>
-                      <Play className="size-8 text-primary" />
-                      <p className="font-display text-sm">Your game will appear here</p>
-                      <p className="max-w-sm text-xs text-muted-foreground">
-                        Keyboard and touch controls included. Click inside the frame first so the
-                        game receives your input.
-                      </p>
-                    </>
-                  )}
-                </div>
-              )}
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button onClick={start} disabled={running} className="font-display tracking-wide">
+                  {running ? <Loader2 className="animate-spin" /> : <Send />}
+                  {running ? "Working…" : hasFiles ? "Send to CryptoXI" : "Build my game"}
+                </Button>
+                {running && (
+                  <Button variant="outline" onClick={() => abortRef.current?.abort()}>
+                    <Square /> Stop
+                  </Button>
+                )}
+              </div>
             </div>
-          </div>
 
-          {showCode && html && (
-            <pre className="mt-3 max-h-96 overflow-auto rounded-2xl border border-border bg-secondary/40 p-4 text-xs leading-relaxed text-muted-foreground">
-              <code>{html}</code>
-            </pre>
-          )}
-        </section>
+            <div className="flex min-h-[18rem] flex-1 flex-col rounded-2xl border border-border bg-card/70 backdrop-blur-xl">
+              <div className="flex items-center gap-2 border-b border-border px-3 py-2 text-xs font-semibold">
+                <Terminal className="size-3.5 text-primary" /> Activity
+              </div>
+              <div ref={logRef} className="max-h-[26rem] flex-1 space-y-2 overflow-auto p-3 text-xs">
+                {!log.length && (
+                  <p className="text-muted-foreground">
+                    CryptoXI's plan, file edits, builds, test runs and fixes stream here.
+                  </p>
+                )}
+                {log.map((item) => (
+                  <LogRow key={item.id} item={item} />
+                ))}
+              </div>
+            </div>
+          </section>
+
+          <section className="flex flex-col rounded-2xl border border-border bg-card/60 backdrop-blur-xl">
+            <Tabs defaultValue="preview" className="flex h-full flex-col gap-0">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2">
+                <TabsList>
+                  <TabsTrigger value="preview">Preview</TabsTrigger>
+                  <TabsTrigger value="files">Files ({Object.keys(state.files).length})</TabsTrigger>
+                  <TabsTrigger value="problems">Problems ({problems.length})</TabsTrigger>
+                </TabsList>
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" onClick={runNow} disabled={!hasFiles || running}>
+                    <Play /> Run
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => previewRef.current?.reload()} disabled={!hasFiles}>
+                    <RefreshCw /> Restart
+                  </Button>
+                  <Button size="sm" onClick={download} disabled={!hasFiles}>
+                    <Download /> Export
+                  </Button>
+                </div>
+              </div>
+
+              <TabsContent value="preview" className="m-0">
+                <div className="aspect-video w-full overflow-hidden rounded-b-2xl">
+                  <PreviewFrame ref={previewRef} onRuntimeError={(m) => project.pushRuntimeError(m)} />
+                </div>
+              </TabsContent>
+              <TabsContent value="files" className="m-0 h-[28rem]">
+                <FileExplorer />
+              </TabsContent>
+              <TabsContent value="problems" className="m-0 h-[28rem] overflow-auto p-3">
+                {problems.length ? (
+                  <ul className="space-y-2 text-xs">
+                    {problems.map((p, i) => (
+                      <li key={i} className="flex gap-2 rounded-lg border border-destructive/40 bg-destructive/10 p-2">
+                        <AlertTriangle className="size-3.5 shrink-0 text-destructive" />
+                        <pre className="whitespace-pre-wrap break-words">{p}</pre>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <CheckCircle2 className="size-3.5 text-primary" /> No build or runtime errors recorded.
+                  </p>
+                )}
+              </TabsContent>
+            </Tabs>
+          </section>
+        </div>
       </div>
     </main>
   );
+}
+
+function LogRow({ item }: { item: LogItem }) {
+  if (item.kind === "phase")
+    return (
+      <p className="flex items-center gap-2 font-display text-[11px] uppercase tracking-[0.18em] text-primary">
+        <Boxes className="size-3.5" /> {item.role} · {item.phase}
+      </p>
+    );
+  if (item.kind === "thought")
+    return (
+      <p className="flex gap-2 text-muted-foreground">
+        <Bot className="mt-0.5 size-3.5 shrink-0 text-accent" />
+        <span className="whitespace-pre-wrap">{item.text}</span>
+      </p>
+    );
+  if (item.kind === "tool")
+    return (
+      <div className="rounded-lg border border-border bg-secondary/40 p-2">
+        <p className="flex items-center gap-2 font-mono text-[11px]">
+          <Wrench className={`size-3 ${item.ok ? "text-primary" : "text-destructive"}`} />
+          {item.name}
+          {item.detail ? <span className="truncate text-muted-foreground">{item.detail}</span> : null}
+        </p>
+        {!item.ok && <pre className="mt-1 whitespace-pre-wrap text-[11px] text-destructive">{item.output.slice(0, 600)}</pre>}
+      </div>
+    );
+  if (item.kind === "done")
+    return (
+      <p className="flex gap-2 rounded-lg border border-primary/40 bg-primary/10 p-2">
+        <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-primary" />
+        <span className="whitespace-pre-wrap">{item.summary}</span>
+      </p>
+    );
+  if (item.kind === "error")
+    return (
+      <p className="flex gap-2 rounded-lg border border-destructive/40 bg-destructive/10 p-2 text-destructive">
+        <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+        <span className="whitespace-pre-wrap">{item.text}</span>
+      </p>
+    );
+  return null;
 }
