@@ -30,7 +30,7 @@ export type RunOptions = {
 
 function argSummary(name: string, raw: string) {
   try {
-    const a = JSON.parse(raw) as Record<string, string>;
+    const a = JSON.parse(raw) as { path?: string; name?: string; label?: string; summary?: string };
     return a.path ?? a.name ?? a.label ?? a.summary?.slice(0, 60) ?? "";
   } catch {
     return "";
@@ -136,7 +136,7 @@ export async function runAgent(opts: RunOptions): Promise<void> {
       });
 
       // Phase transitions driven by real project state, not model claims.
-      const next: typeof phase =
+      const next: "plan" | "build" | "fix" | "qa" =
         !res.ok && /build|run|test/.test(call.name)
           ? "fix"
           : call.name === "run_project" || call.name === "run_tests"
