@@ -81,8 +81,14 @@ function StudioPage() {
 
   const start = useCallback(async () => {
     const prompt = request.trim();
-    if (prompt.length < 3) return toast.error("Tell CryptoXI what to build or fix.");
-    if (!isConfigured(config)) return toast.error("Configure an inference backend under Engine first.");
+    if (prompt.length < 3) {
+      toast.error("Tell CryptoXI what to build or fix.");
+      return;
+    }
+    if (!isConfigured(config)) {
+      toast.error("Configure an inference backend under Engine first.");
+      return;
+    }
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -115,7 +121,10 @@ function StudioPage() {
     const files = Object.fromEntries(project.list().map((p) => [p, project.read(p) ?? ""]));
     const result = build(files);
     project.setBuildErrors(result.errors);
-    if (!result.ok) return toast.error(result.errors[0]);
+    if (!result.ok) {
+      toast.error(result.errors[0] ?? "Build failed.");
+      return;
+    }
     const errors = await previewRef.current?.run(result.html);
     project.setRuntimeErrors(errors ?? []);
   };

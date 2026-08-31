@@ -120,7 +120,7 @@ export async function complete(
   const res = await fetch(endpoint(config, "/chat/completions"), {
     method: "POST",
     headers: headers(config),
-    signal,
+    ...(signal ? { signal } : {}),
     body: JSON.stringify({
       model: config.model,
       temperature: config.temperature,
@@ -184,7 +184,7 @@ export function parseInlineToolCalls(content: string): ToolCall[] {
   let index = 0;
   while ((match = re.exec(content))) {
     try {
-      const parsed = JSON.parse(match[1]) as { tool?: string; name?: string; arguments?: unknown };
+      const parsed = JSON.parse(match[1] ?? "{}") as { tool?: string; name?: string; arguments?: unknown };
       const name = parsed.tool ?? parsed.name;
       if (!name) continue;
       calls.push({

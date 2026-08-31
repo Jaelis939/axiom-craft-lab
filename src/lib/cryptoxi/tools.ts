@@ -160,10 +160,21 @@ export function qaChecks(): string[] {
   return issues;
 }
 
+type ToolArgs = {
+  path?: string;
+  content?: string;
+  find?: string;
+  replace?: string;
+  name?: string;
+  design?: string;
+  label?: string;
+  summary?: string;
+};
+
 export async function executeTool(name: string, rawArgs: string, ctx: ToolContext): Promise<ToolResult> {
-  let args: Record<string, string> = {};
+  let args: ToolArgs = {};
   try {
-    args = rawArgs ? (JSON.parse(rawArgs) as Record<string, string>) : {};
+    args = rawArgs ? (JSON.parse(rawArgs) as ToolArgs) : {};
   } catch {
     return { ok: false, output: "Invalid JSON arguments. Re-issue the tool call with valid JSON." };
   }
@@ -197,7 +208,7 @@ export async function executeTool(name: string, rawArgs: string, ctx: ToolContex
         return { ok: false, output: `Snippet not found in ${path}. Read the file again and patch with exact text.` };
       if (occurrences > 1)
         return { ok: false, output: `Snippet appears ${occurrences} times in ${path}. Include more context.` };
-      project.write(path, current.replace(args.find, args.replace ?? ""));
+      project.write(path, current.replace(args.find ?? "", args.replace ?? ""));
       return { ok: true, output: `Patched ${path}.` };
     }
 
